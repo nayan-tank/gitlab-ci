@@ -1,0 +1,60 @@
+# Parallel 
+# Hidden jobs: Jobs that start with . are never added to a pipeline. Use them to hold configuration you want to reuse.
+# Set keyword defaults that apply to all jobs when not defined
+
+
+stages:
+  - create_file
+  - create_folder
+  - display_content
+
+default:
+  tags:
+    - local
+
+.standard_rules:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  # when: manual
+  # environment: production
+  
+.parallel-hidden-job:
+  parallel:
+    matrix:
+      - PLATFORM: [linux, mac, windows]
+        ARCH: [x64, x86]
+
+create_folder:
+  stage: create_folder
+  # tags:
+  #   - local
+  extends:
+    - .standard_rules
+    - .parallel-hidden-job
+    
+  script:
+    - powershell  New-Item -Name test -Type Directory -Path C:\GitLab-Runner 
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+create_file:
+  dependencies:
+    - create_folder 
+  stage: create_file
+  # tags:
+  #   - local
+  script:
+    - powershell -File test.ps1 -Path C:\GitLab-Runner\test
+
+display_content:
+  dependencies:
+    - create_file
+  stage: display_content
+  # tags:
+  #   - local
+  script:
+    - |
+      powershell cd C:\GitLab-Runner\test
+      pwd
+      

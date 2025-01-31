@@ -1,0 +1,30 @@
+variable: # global varibale 
+  USERNAME: nayantank
+  TOKEN: saduyisdhsuywu
+
+run_tests:
+  image: python:3.9-slim-buster
+  before_script:
+    - apt update && apt install make 
+  script:
+    - make install
+  artifacts:
+    paths:  
+      - "build/"
+
+build_image:
+  image: docker:20.10.16
+  variables: # job level variable 
+    IMAGE_NAME: nayantank/app
+    IMAGE_TAG: v1
+  before_script:
+    - chmod 400 $SSH_KEY
+  script:
+    - |
+      ssh -o ScriptHostKeyChecking=no -i $SSH_KEY root@161.23.24.45 
+      docker login -u $USERNAME -p $PASSWORD 
+      docker ps -aq | xargs docker stop | xargs docker rm -f 
+      docker build . -t $IMAGE_NAME:IMAGE_TAG
+      docker push $IMAGE_NAME:IMAGE_TAG
+      docker run -d -p 8080:8080 $IMAGE_NAME:IMAGE_TAG
+

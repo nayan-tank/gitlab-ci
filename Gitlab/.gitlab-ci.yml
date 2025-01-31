@@ -1,0 +1,61 @@
+variables:
+    BuildType:
+        description: Choose what you wants to deploy 
+        value: "newPortalContentCopy"
+        options:
+            - newPortalContentCopy
+            - oldPortal
+            - newDB
+            - newWEB
+            - newAPP
+            - DSU
+            - StartMaintenance
+            - StopMaintenance
+            - MaintenanceStatus
+    Confirmation:
+        value: "YES" 
+        options:
+            - "YES"
+            - "NO"
+        description: Do you want to confirm the job?
+    Releasemode:
+        value: "Full"
+        options:
+            - Full
+            - Hotfix
+        description: ""
+    Action:
+        value: "RELEASE"
+        options:   
+            - RELEASE
+            - BACKUP
+        description: Do you want to do backup or release?
+    DeleteWebsiteContent:
+        value: "YES"
+        options:
+            - "YES"
+            - "NO"
+        description: If you wants to delete Website Content for release.
+    versionKeyValue:
+        value: "1.0.8.88"
+        description: Give DSU Verssion here
+    
+stages:
+    - deploy
+
+deploy:
+    stage: deploy
+    script:
+        - |
+        
+            if [[ $BuildType == "newPortalContentCopy" ]] then ( echo "newPortalContentCopy" ) 
+            elif [[ $BuildType == "oldPortal" ]] then ( echo "oldPortal" ) 
+            elif [[ $BuildType == "newDB" ]] then ( echo "newDB" ) 
+            elif [[ $BuildType == "newWEB" ]] then ( echo "newWEB" ) 
+            elif [[ $BuildType == "newAPP" ]] then ( echo "newAPP" ) 
+            elif [[ $BuildType == "DSU" ]] then ( echo "DSU" ) 
+            elif [[ $BuildType == "StartMaintenance" ]] then ( echo "StartMaintenance" ) 
+            elif [[ $BuildType == "MaintenanceStatus" ]] then ( echo "MaintenanceStatus" ) 
+            else echo "Invalid BuildType"
+            fi
+

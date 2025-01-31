@@ -1,0 +1,55 @@
+# sequencial job 
+# allow_failure: Allow job to fail. A failed job does not cause the pipeline to fail.
+# You can use the only:refs and except:refs keywords to control when to add jobs to a pipeline based on branch names or pipeline types.
+
+
+stages:
+  - create_file
+  - failure
+
+job-1:
+    stage: create_file
+    tags:
+      - local
+    script:
+      - powershell -File test.ps1
+    retry: 2
+    only: 
+      - main
+      - /^feature-.*$/
+    except:
+      - /^stable-branch.*$/
+    
+
+job-1.1:
+    stage: create_file
+    tags:
+      - local
+    script:
+      - powershell -File test.ps1
+    allow_failure: true
+      
+job-1.2:
+    stage: create_file
+    tags:
+      - local
+    script:
+      - powershell -File test.ps1
+
+job-2:
+  stage: create_file
+  tags:
+    - local
+  script:
+    - powershell  New-Item -Name test -Type Directory -Path C:\GitLab-Runner 
+
+
+failure:
+  stage: failure
+  script:
+    - powershell Write-Host "Job fail ho gayi"
+  # on_success, never, always, manual, delayed, on_failure
+  when: manual
+  environment: production
+
+
