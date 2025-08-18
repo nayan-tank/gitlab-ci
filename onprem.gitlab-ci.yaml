@@ -1,0 +1,123 @@
+# Common rules for all jobs
+.common_rules: &common_rules
+  rules:
+  - if: '$CI_COMMIT_BRANCH =~ /^(main|dev|staging|prod)$/'
+    changes:
+      - 3rdparty/**/*
+      - lib/**/*
+      - src/$SERVICE/**/*
+    when: on_success
+  - when: never
+
+
+# Dynamic tags for all branches
+default:
+  tags:
+    - ${CI_COMMIT_BRANCH}-runner
+
+
+# Docker login template
+.docker_login: &docker_login
+  before_script:
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+
+# Stages for the pipeline
+stages:
+  - version
+  - build_and_push
+  - scan
+
+
+# Global variables
+variables:
+  IMAGE_NAME: "$CI_REGISTRY_IMAGE"
+  DOCKER_BUILDKIT: 1
+  DOCKER_DRIVER: overlay2
+
+
+# Build and push template
+.build_and_push_template: &build_and_push_template
+  image: docker:24.0.5
+  stage: build_and_push
+  <<: *docker_login
+  variables: &build_variables
+    TAG_PREFIX: "$CI_COMMIT_BRANCH"
+  needs:
+    - job: generate_version
+      artifacts: true
+  <<: *common_rules
+  script: |-
+    IMAGE_TAG="${TAG_PREFIX}-${GIT_TAG}"
+    DOCKERFILE_PATH="$CI_PROJECT_DIR/src/${SERVICE}/Dockerfile"
+
+    echo "Changing latest tag to rollback tag..."
+    docker pull "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-latest" || true
+    docker tag "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-latest" "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-rollback" || true
+
+    echo "Building Docker image for $IMAGE_NAME/${SERVICE}_image:${IMAGE_TAG} and latest..."
+    docker build --cache-from="$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-latest" \
+    -t "$IMAGE_NAME/${SERVICE}_image:${IMAGE_TAG}" \
+    -t "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-latest" \
+    -f "$DOCKERFILE_PATH" "$CI_PROJECT_DIR"
+
+    echo "Pushing Docker image..."
+    docker push "$IMAGE_NAME/${SERVICE}_image:${IMAGE_TAG}"
+    docker push "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-latest"
+    docker push "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-rollback" || true
+
+    echo "Cleaning up local image ${CI_COMMIT_BRANCH}s..."
+    docker rmi -f "$IMAGE_NAME/${SERVICE}_image:${IMAGE_TAG}" "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-latest" "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-rollback" || true
+
+
+# Trivy scan template
+.trivy_scan_template: &trivy_scan_template
+  image: aquasec/trivy:latest
+  stage: scan
+  script: |-
+    IMAGE_TAG="${TAG_PREFIX}-${GIT_TAG}"
+    echo "Scanning image: $IMAGE_NAME/${SERVICE}_image:${IMAGE_TAG}"
+    trivy image --exit-code "$TRIVY_EXIT_CODE" --ignore-unfixed --severity "$TRIVY_SEVERITY" "$IMAGE_NAME/${SERVICE}_image:${IMAGE_TAG}"
+  variables: &trivy_variables
+    TRIVY_EXIT_CODE: 0
+    TAG_PREFIX: "$CI_COMMIT_BRANCH"
+    TRIVY_SEVERITY: "CRITICAL,HIGH"
+    TRIVY_USERNAME: "$CI_REGISTRY_USER"
+    TRIVY_PASSWORD: "$CI_JOB_TOKEN"
+    TRIVY_NO_PROGRESS: "true"
+    TRIVY_CACHE_DIR: ".trivycache/"
+  needs:
+    - job: generate_version
+      artifacts: true
+  <<: *common_rules  
+
+
+# Actual jobs (short, DRY)
+generate_version:
+  stage: version
+  script: |
+    VERSION="$(date +'%y.%m.%d').$CI_PIPELINE_IID"
+    echo "GIT_TAG=$VERSION" >> version.env
+    echo "Generated Version: $VERSION"
+  artifacts:
+    reports:
+      dotenv: version.env
+    expire_in: 1 hour
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^(main|dev|staging|prod)$/'
+      when: always
+    - when: never
+
+
+build_and_push_admin_image:
+  <<: *build_and_push_template
+  variables:
+    <<: *build_variables
+    SERVICE: "admin"
+
+
+trivy_scan_admin_image:
+  <<: *trivy_scan_template
+  variables:
+    <<: *trivy_variables
+    SERVICE: "admin"
