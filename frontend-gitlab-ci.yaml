@@ -1,0 +1,133 @@
+.common_rules: &common_rules
+  rules:
+  - if: '$CI_COMMIT_BRANCH =~ /^(main|staging|prod)$/'
+    when: on_success
+  - when: never
+
+
+default:
+  tags:
+    - ${CI_COMMIT_BRANCH}-runner
+  before_script:
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+
+stages:
+  - version
+  - build
+  # - scan
+  - deploy
+
+
+variables:
+  IMAGE_NAME: "${CI_REGISTRY_IMAGE}/frontend_image" 
+  GIT_TAG: ""
+  DOCKER_TLS_CERTDIR: ""
+  TAG_PREFIX: "$CI_COMMIT_BRANCH"
+
+
+generate_version:
+  stage: version
+  before_script: []
+  script: |
+    VERSION="$(date +'%y.%m.%d').$CI_PIPELINE_IID"
+    echo "GIT_TAG=$VERSION" >> version.env
+    echo "Generated Version: $VERSION"
+  artifacts:
+    reports:
+      dotenv: version.env
+  <<: *common_rules
+  
+
+build_and_push_image:
+  image: docker:24.0.5
+  services:
+    - docker:dind
+  stage: build
+  needs: 
+    - job: generate_version
+      artifacts: true
+  script: |-
+
+    # Changing tag name for branch main 
+    if [ "$TAG_PREFIX" = "main" ]; then
+      IMAGE_TAG="dev-${GIT_TAG}"
+      TAG_PREFIX="dev"
+    else
+      IMAGE_TAG="${TAG_PREFIX}-${GIT_TAG}"
+    fi
+
+    echo "Changing latest tag to rollback tag..."
+    if docker pull "$IMAGE_NAME:${TAG_PREFIX}-latest"; then
+      docker tag "$IMAGE_NAME:${TAG_PREFIX}-latest" "$IMAGE_NAME:${TAG_PREFIX}-rollback"
+      docker rmi -f "$IMAGE_NAME:${TAG_PREFIX}-latest" || true
+    else
+      echo "⚠️ No latest image found for $IMAGE_NAME:${TAG_PREFIX}-latest, skipping rollback tagging."
+    fi
+
+    docker build --cache-from="$IMAGE_NAME:${TAG_PREFIX}-latest" \
+    -f "${CI_PROJECT_DIR}/${TAG_PREFIX}.Dockerfile" \
+    -t "$IMAGE_NAME:${IMAGE_TAG}" \
+    -t "$IMAGE_NAME:${TAG_PREFIX}-latest" \
+    $CI_PROJECT_DIR
+
+    echo "Pushing Docker image..."
+    docker push "$IMAGE_NAME:${IMAGE_TAG}"
+    docker push "$IMAGE_NAME:${TAG_PREFIX}-latest"
+    docker push "$IMAGE_NAME:${TAG_PREFIX}-rollback" || true
+
+    # echo "Cleaning up local image ${CI_COMMIT_BRANCH}s..."
+    # docker rmi -f "$IMAGE_NAME:${IMAGE_TAG}" "$IMAGE_NAME:${TAG_PREFIX}-rollback" || true
+  <<: *common_rules
+
+
+trivy_scan:
+  image: aquasec/trivy:latest
+  stage: scan
+  needs:
+    - job: generate_version
+      artifacts: true
+    - job: build_and_push_image
+  before_script: [] 
+  variables:
+    TRIVY_EXIT_CODE: 0
+    TRIVY_SEVERITY: "CRITICAL,HIGH"
+    TRIVY_USERNAME: "$CI_REGISTRY_USER"
+    TRIVY_PASSWORD: "$CI_JOB_TOKEN"
+    TRIVY_NO_PROGRESS: "true"
+  script: |- 
+    # Changing tag name for branch main 
+    if [ "$TAG_PREFIX" = "main" ]; then
+      IMAGE_TAG="dev-${GIT_TAG}"
+    else
+      IMAGE_TAG="${TAG_PREFIX}-${GIT_TAG}"
+    fi
+
+    trivy image --exit-code "$TRIVY_EXIT_CODE" --ignore-unfixed --severity "$TRIVY_SEVERITY" "$IMAGE_NAME:$IMAGE_TAG"
+  <<: *common_rules
+  
+
+auto_deployment:
+  image: alpine:3.20
+  stage: deploy
+  before_script: [] 
+  <<: *common_rules
+  script: |-
+    set -eux
+
+    # Install dependencies and kubectl
+    apk add --no-cache bash curl tar git openssl
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    chmod +x kubectl && mv kubectl /usr/local/bin/
+
+    # Configure kubeconfig (from GitLab variable)
+    kubectl cluster-info
+
+    # Delete all pods to pull latest image
+    kubectl delete pod -n backend -l app=frontend
+
+    # Wait for 7 sec 
+    sleep 7
+
+    # Restart deployment 
+    kubectl rollout restart deploy/frontend -n backend 
