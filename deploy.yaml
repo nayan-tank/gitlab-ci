@@ -1,0 +1,70 @@
+name: Deploy to cluster  
+
+on:
+  workflow_call:
+    inputs:
+      project_id:
+        description: "GCP project id"
+        required: true
+        type: string
+      cluster_name:
+        description: "cluster name"
+        required: true
+        type: string
+      helm_env:
+        description: "Helmfile environment"
+        required: true
+        type: string
+      region:
+        description: "cluster region"
+        required: true
+        type: string
+    secrets:
+      GCLOUD_KEY:
+        required: true
+      GIT_TOKEN: 
+        required: true
+        
+      
+
+jobs:
+  deploy_to_dev:
+    name: Deploy to ${{ inputs.cluster_name }} Cluster
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+        token: ${{ secrets.GIT_TOKEN }}
+
+    - id: 'auth-upswing'
+      uses: 'google-github-actions/auth@v2'
+      with:
+        credentials_json: '${{ secrets.GCLOUD_KEY }}'
+
+    - name: Set up GCloud
+      uses: google-github-actions/setup-gcloud@v2
+      with:
+        project_id: "${{ inputs.project_id }}"
+
+    - name: Install gke-gcloud-auth-plugin
+      run: |
+        gcloud components install gke-gcloud-auth-plugin
+
+    - name: Install Helmfile
+      run: |
+        wget https://github.com/helmfile/helmfile/releases/download/v0.168.0/helmfile_0.168.0_linux_amd64.tar.gz
+        tar -zxvf helmfile_0.168.0_linux_amd64.tar.gz
+        sudo mv helmfile /usr/local/bin/helmfile
+        helmfile --version
+
+    - name: Connect to GKE Cluster
+      run: |
+        gcloud container clusters get-credentials ${{ inputs.cluster_name }} --region ${{ inputs.region }} --project ${{ inputs.project_id }}
+        kubectl version --client
+
+    - name: Deploy using Helmfile
+      run: |-
+        cd devops/
+        helmfile sync -e ${{ inputs.helm_env }}
