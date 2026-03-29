@@ -1,0 +1,138 @@
+.dev_changes: &dev_changes
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    when: never
+  - changes:
+      - env/dev/**/*
+    when: on_success
+  - when: never
+
+.stag_changes: &stag_changes
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    when: never
+  - changes:
+      - env/stag/**/*
+    when: on_success
+  - when: never
+
+.prod_changes: &prod_changes
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    when: never
+  - changes:
+      - env/prod/**/*
+    when: on_success
+  - when: never
+
+.nhri_changes: &nhri_changes
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    when: never
+  - changes:
+      - env/nhri/**/*
+    when: on_success
+  - when: never
+
+
+default:
+  image: alpine:3.20
+  before_script:
+    - set -eux
+
+    # Install dependencies and kubectl
+    - apk add --no-cache bash curl tar git openssl
+    - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x kubectl && mv kubectl /usr/local/bin/
+
+    # Install helm
+    - curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+    - chmod 700 get_helm.sh && ./get_helm.sh
+
+    # Install helmfile
+    - curl -L https://github.com/helmfile/helmfile/releases/download/v0.171.0/helmfile_0.171.0_linux_amd64.tar.gz -o helmfile.tar.gz
+    - tar -xzf helmfile.tar.gz
+    - mv helmfile /usr/local/bin/helmfile
+    - chmod +x /usr/local/bin/helmfile
+
+    # Configure kubeconfig (from GitLab variable)
+    - kubectl cluster-info
+
+
+stages:
+  - deploy 
+
+
+deploy_dev:
+  stage: deploy
+  rules:
+    - *dev_changes
+  tags:
+    - dev-runner
+  variables:
+    SECURE_FILES_DOWNLOAD_PATH: 'secure-files'
+  script: | 
+    curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
+
+    # Create or update Kubernetes secret
+    kubectl create secret generic firebase-credentials \
+      --from-file=firebase-credentials.json=secure-files/abcd-dsdsdsd-firebase-hsddsj.json \
+      --dry-run=client -o yaml | kubectl apply -n backend -f -
+
+    # Cleanup
+    rm secure-files/abcd-dsdsdsd-firebase-hsddsj.json
+
+    # Deploy to dev environment
+    helmfile sync -e dev-enec-services 
+
+
+deploy_stag:
+  stage: deploy
+  rules:
+    - *stag_changes
+  tags:
+    - staging-runner
+  variables:
+    SECURE_FILES_DOWNLOAD_PATH: 'secure-files'
+  script: |
+    curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
+
+    # Create or update Kubernetes secret
+    kubectl create secret generic firebase-credentials \
+      --from-file=firebase-credentials.json=secure-files/abcd-dsdsdsd-firebase-hsddsj.json \
+      --dry-run=client -o yaml | kubectl apply -n backend -f -
+
+    # Cleanup
+    rm secure-files/abcd-dsdsdsd-firebase-hsddsj.json
+
+    helmfile sync -e stag-enec-services 
+
+
+deploy_nhri:
+  stage: deploy
+  rules:
+    - *nhri_changes
+  tags:
+    - nhri-runner
+  variables:
+    SECURE_FILES_DOWNLOAD_PATH: 'secure-files'
+  script: |
+    helmfile sync -e nhri-services
+
+
+deploy_prod:
+  stage: deploy
+  rules:
+    - *prod_changes
+  tags:
+    - prod-runner
+  variables:
+    SECURE_FILES_DOWNLOAD_PATH: 'secure-files'
+  script: |
+    curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
+
+    # Create or update Kubernetes secret
+    kubectl create secret generic firebase-credentials \
+      --from-file=firebase-credentials.json=secure-files/abcd-dsdsdsd-firebase-hsddsj.json \
+      --dry-run=client -o yaml | kubectl apply -n backend -f -
+
+    # Cleanup
+    rm secure-files/abcd-dsdsdsd-firebase-hsddsj.json
+
+    helmfile sync -e prod-enec-services 
