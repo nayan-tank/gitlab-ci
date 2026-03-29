@@ -1,0 +1,34 @@
+name: Kynect Dev 
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - 'tools/**'
+      - 'docs/**'
+
+
+jobs:
+  build_microservices:
+    secrets: inherit
+    uses: ./.github/workflows/build.yaml
+
+  print_services:
+    needs: build_microservices
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Services built ${{ needs.build_microservices.outputs.services }}"
+
+  deploy_images:
+    needs: 
+      - print_services
+    if: needs.build_microservices.outputs.services != '[]'  # Only run if there are changed services
+    uses: ./.github/workflows/deploy.yaml
+    with:
+      helm_env: dev-service
+      cluster_name: dev
+      project_id: <project_id>
+      region: asia-south1
+    secrets:
+      GCLOUD_KEY: ${{ secrets.GCLOUD_KEY_KYNECT }}
+      GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
