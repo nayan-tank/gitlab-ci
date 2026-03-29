@@ -1,0 +1,297 @@
+# Common rules for all jobs
+.common_rules: &common_rules
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^(main|staging|prod)$/'
+      changes:
+        - 3rdparty/**/*
+        - lib/**/*
+        - src/$SERVICE/**/*
+      when: on_success
+    - when: never
+
+
+# Dynamic tags for all branches
+default:
+  tags:
+    - ${CI_COMMIT_BRANCH}-runner
+
+
+# Docker login template
+.docker_login: &docker_login
+  before_script:
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+
+# Stages for the pipeline
+stages:
+  - version
+  - build_and_push
+  - scan
+  - deploy
+
+
+# Global variables
+variables:
+  IMAGE_NAME: "$CI_REGISTRY_IMAGE"
+  DOCKER_BUILDKIT: 1
+  DOCKER_DRIVER: overlay2
+
+
+# Build and push template
+.build_and_push_template: &build_and_push_template
+  image: docker:24.0.5
+  stage: build_and_push
+  <<: [ *docker_login, *common_rules ]
+  variables: &build_variables
+    TAG_PREFIX: "$CI_COMMIT_BRANCH"
+  needs:
+    - job: generate_version
+      artifacts: true
+  script: |-
+    # Changing tag name from main to dev
+    if [ "$TAG_PREFIX" = "main" ]; then
+      IMAGE_TAG="dev-${GIT_TAG}"
+      TAG_PREFIX="dev"
+    else
+      IMAGE_TAG="${TAG_PREFIX}-${GIT_TAG}"
+    fi
+
+    DOCKERFILE_PATH="$CI_PROJECT_DIR/src/${SERVICE}/Dockerfile"
+
+    echo "Changing latest tag to rollback tag..."
+    if docker pull "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-latest"; then
+      docker pull "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-latest" || true
+      docker tag "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-latest" "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-rollback" || true
+      docker rmi -f "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-latest"  || true
+    else
+      echo "⚠️ No latest image found for $IMAGE_NAME:${TAG_PREFIX}-latest, skipping rollback tagging."
+    fi
+
+    echo "Building Docker image for $IMAGE_NAME/${SERVICE}_image:${IMAGE_TAG} and latest..."
+    docker build --cache-from="$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-latest" \
+    -t "$IMAGE_NAME/${SERVICE}_image:${IMAGE_TAG}" \
+    -t "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-latest" \
+    -f "$DOCKERFILE_PATH" "$CI_PROJECT_DIR"
+
+    echo "Pushing Docker image..."
+    docker push "$IMAGE_NAME/${SERVICE}_image:${IMAGE_TAG}"
+    docker push "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-latest"
+    docker push "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-rollback" || true
+
+    echo "Cleaning up local image ${CI_COMMIT_BRANCH}s..."
+    docker rmi -f "$IMAGE_NAME/${SERVICE}_image:${IMAGE_TAG}" "$IMAGE_NAME/${SERVICE}_image:${TAG_PREFIX}-rollback" || true
+
+
+# Trivy scan template
+.trivy_scan_template: &trivy_scan_template
+  image: aquasec/trivy:latest
+  stage: scan
+  script: |-
+    # Changing tag name from main to dev
+    if [ "$TAG_PREFIX" = "main" ]; then
+      IMAGE_TAG="dev-${GIT_TAG}"
+    else
+      IMAGE_TAG="${TAG_PREFIX}-${GIT_TAG}"
+    fi
+
+    echo "Scanning image: $IMAGE_NAME/${SERVICE}_image:${IMAGE_TAG}"
+    sleep 10
+    trivy image --exit-code "$TRIVY_EXIT_CODE" --ignore-unfixed --severity "$TRIVY_SEVERITY" "$IMAGE_NAME/${SERVICE}_image:${IMAGE_TAG}"
+  variables: &trivy_variables
+    TRIVY_EXIT_CODE: 0
+    TAG_PREFIX: "$CI_COMMIT_BRANCH"
+    TRIVY_SEVERITY: "CRITICAL,HIGH"
+    TRIVY_USERNAME: "$CI_REGISTRY_USER"
+    TRIVY_PASSWORD: "$CI_JOB_TOKEN"
+    TRIVY_NO_PROGRESS: "true"
+    TRIVY_CACHE_DIR: ".trivycache/"
+  needs:
+    - job: generate_version
+      artifacts: true
+  <<: *common_rules
+
+
+# Actual jobs (short, DRY)
+generate_version:
+  stage: version
+  script: |
+    VERSION="$(date +'%y.%m.%d').$CI_PIPELINE_IID"
+    echo "GIT_TAG=$VERSION" >> version.env
+    echo "Generated Version: $VERSION"
+  artifacts:
+    reports:
+      dotenv: version.env
+    expire_in: 1 hour
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^(main|staging|prod)$/'
+      when: always
+    - when: never
+
+
+# Admin service jobs
+build_and_push_admin_image:
+  <<: *build_and_push_template
+  variables:
+    <<: *build_variables
+    SERVICE: "admin"
+
+trivy_scan_admin_image:
+  <<: *trivy_scan_template
+  variables:
+    <<: *trivy_variables
+    SERVICE: "admin"
+  needs:
+    - job: generate_version
+      artifacts: true
+    - job: build_and_push_admin_image
+
+
+# Bookings service jobs
+build_and_push_booking_image:
+  <<: *build_and_push_template
+  variables:
+    <<: *build_variables
+    SERVICE: "booking"
+
+trivy_scan_booking_image:
+  <<: *trivy_scan_template
+  variables:
+    <<: *trivy_variables
+    SERVICE: "booking"
+  needs:
+    - job: generate_version
+      artifacts: true
+    - job: build_and_push_booking_image
+
+
+# Complaints service jobs
+build_and_push_complaints_image:
+  <<: *build_and_push_template
+  variables:
+    <<: *build_variables
+    SERVICE: "complaints"
+
+trivy_scan_complaints_image:
+  <<: *trivy_scan_template
+  variables:
+    <<: *trivy_variables
+    SERVICE: "complaints"
+  needs:
+    - job: generate_version
+      artifacts: true
+    - job: build_and_push_complaints_image
+
+
+# Room Services service jobs
+build_and_push_room_services_image:
+  <<: *build_and_push_template
+  variables:
+    <<: *build_variables
+    SERVICE: "room_services"
+
+trivy_scan_room_services_image:
+  <<: *trivy_scan_template
+  variables:
+    <<: *trivy_variables
+    SERVICE: "room_services"
+  needs:
+    - job: generate_version
+      artifacts: true
+    - job: build_and_push_room_services_image
+
+
+# Services service jobs
+build_and_push_services_image:
+  <<: *build_and_push_template
+  variables:
+    <<: *build_variables
+    SERVICE: "services"
+
+trivy_scan_services_image:
+  <<: *trivy_scan_template
+  variables:
+    <<: *trivy_variables
+    SERVICE: "services"
+  needs:
+    - job: generate_version
+      artifacts: true
+    - job: build_and_push_services_image
+
+
+# App service jobs
+build_and_push_app_service_image:
+  <<: *build_and_push_template
+  variables:
+    <<: *build_variables
+    SERVICE: "app_service"
+
+trivy_scan_app_service_image:
+  <<: *trivy_scan_template
+  variables:
+    <<: *trivy_variables
+    SERVICE: "app_service"
+  needs:
+    - job: generate_version
+      artifacts: true
+    - job: build_and_push_app_service_image
+
+
+# Reports service jobs
+build_and_push_reports_service_image:
+  <<: *build_and_push_template
+  variables:
+    <<: *build_variables
+    SERVICE: "reports"
+
+trivy_scan_reports_service_image:
+  <<: *trivy_scan_template
+  variables:
+    <<: *trivy_variables
+    SERVICE: "reports"
+  needs:
+    - job: generate_version
+      artifacts: true
+    - job: build_and_push_reports_service_image
+    
+
+# Restart deployment
+auto_deployment:
+  image: alpine:3.20
+  stage: deploy
+  before_script: [ ]
+  needs:
+    - job: trivy_scan_admin_image
+      optional: true
+    - job: trivy_scan_booking_image
+      optional: true
+    - job: trivy_scan_complaints_image
+      optional: true
+    - job: trivy_scan_room_services_image
+      optional: true
+    - job: trivy_scan_services_image
+      optional: true
+    - job: trivy_scan_app_service_image
+      optional: true
+  script: |-
+    set -eux
+
+    # Install dependencies and kubectl
+    apk add --no-cache bash curl tar git openssl
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    chmod +x kubectl && mv kubectl /usr/local/bin/
+
+    # Configure kubeconfig (from GitLab variable)
+    kubectl cluster-info
+
+    # Delete all pods to pull latest image
+    kubectl delete pod --all -n backend
+
+    # Wait for 7 sec 
+    sleep 7
+
+    # Restart deployment 
+    kubectl rollout restart deploy -n backend 
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^(main|staging|prod)$/'
+      when: always
+    - when: never
